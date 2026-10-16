@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orange3-text-analysis"
+version = "0.0.1"
+description = "Add-on do Orange: limpeza, tradução e classificação de textos com modelos do Hugging Face"
+readme = "README.md"
+requires-python = ">=3.12"
+keywords = ["orange3 add-on"]
+# Orange3 NÃO é listado de propósito: evita que o pip tente atualizar
+# o próprio Orange dentro da instalação dele.
+dependencies = [
+    "transformers",
+    "torch",
+    "sentencepiece",
+    "protobuf",
+    "ftfy",
+    "emoji",
+    "orange3>=3.40.0",
+    "pyqt5>=5.15.11",
+]
+
+[project.entry-points."orange3.addon"]
+text_analysis = "text_analysis"
+
+[project.entry-points."orange.widgets"]
+"Text Analysis" = "text_analysis.widgets"
+
+[tool.setuptools.packages.find]
+include = ["text_analysis*"]
+
+[tool.setuptools.package-data]
+"text_analysis.widgets" = ["icons/*.svg"]
