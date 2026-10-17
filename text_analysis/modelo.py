@@ -25,6 +25,27 @@ RE_USUARIO = re.compile(r"@\w+")
 RE_URL = re.compile(r"(https?://|www\.)\S+")
 
 
+def comprimento_maximo_seguro(tokenizer, config, margem=2):
+    """Comprimento máximo de sequência (em tokens) seguro para o modelo.
+
+    O `tokenizer.model_max_length` de vários modelos publicados no Hub não
+    é configurado corretamente (fica com um valor-sentinela enorme, tipo
+    "sem limite"). Confiar só em `truncation=True` nesse caso não trunca
+    nada, e um texto longo estoura `max_position_embeddings` do modelo com
+    um "index out of bounds" — que, quando roda na GPU, costuma aparecer
+    como um confuso "device-side assert triggered" em vez do erro real.
+    Por isso sempre limitamos pelo tamanho real do modelo também.
+    """
+    candidatos = []
+    max_pos = getattr(config, "max_position_embeddings", None)
+    if max_pos:
+        candidatos.append(max(1, max_pos - margem))
+    limite_tokenizer = getattr(tokenizer, "model_max_length", None)
+    if limite_tokenizer and limite_tokenizer < 1_000_000:
+        candidatos.append(limite_tokenizer)
+    return min(candidatos) if candidatos else 512
+
+
 def limpar(texto):
     """Troca menções por @user e links por http (formato usado em tweets)."""
     texto = RE_URL.sub("http", texto)
@@ -44,6 +65,57 @@ def ler_config(nome_modelo, kwargs_carregamento=None):
     rotulos = [str(id2label[i]) for i in sorted(id2label, key=int)]
     arquiteturas = list(getattr(cfg, "architectures", None) or [])
     return rotulos, arquiteturas
+
+
+def eh_erro_cuda(ex):
+    """Indica se a exceção parece vir de um erro de CUDA/GPU.
+
+    Um erro desses (ex.: "device-side assert triggered", "out of memory")
+    pode deixar o contexto da GPU num estado inválido pelo resto do
+    processo: até operações não relacionadas voltam a falhar depois disso,
+    e só reiniciar o Orange resolve de vez. Por isso, ao detectar um,
+    tentamos recarregar o modelo na CPU em vez de insistir na GPU.
+    """
+    return "cuda" in str(ex).lower()
+
+
+def mensagem_erro(ex):
+    """Formata uma exceção para exibir ao usuário, acrescentando uma dica
+    quando parece ser um erro de CUDA/GPU (ver eh_erro_cuda)."""
+    texto = str(ex)
+    if eh_erro_cuda(ex):
+        texto += (" | Isso parece um erro de GPU/CUDA: depois que ocorre, a "
+                  "GPU pode ficar num estado inválido pelo resto desta "
+                  "sessão do Orange. Tentamos recarregar na CPU "
+                  "automaticamente; se o erro persistir mesmo trocando de "
+                  "modelo, reinicie o Orange.")
+    return texto
+
+
+def liberar_memoria():
+    """Força a liberação de memória do modelo carregado mais recentemente.
+
+    Chame logo depois de soltar a última referência ao pipeline/modelo
+    (ex.: `del pipe`), para que a memória (RAM e, se houver, VRAM) seja
+    devolvida de imediato, em vez de ficar alocada até o coletor de lixo do
+    Python rodar por conta própria. Sem isso, cada inferência deixaria o
+    modelo (de centenas de MB a alguns GB) alocado mesmo depois do widget
+    que o criou ser removido do workflow.
+    """
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        # Uma GPU com o contexto CUDA corrompido (erro "sticky", ex.: um
+        # "device-side assert" anterior) pode falhar até numa chamada de
+        # limpeza como empty_cache(). Esta função só faz uma otimização de
+        # limpeza; nunca deve propagar erro — principalmente porque é
+        # chamada ao remover um widget (onDeleteWidget), e uma exceção ali
+        # aparece como um crash do canvas do Orange.
+        pass
 
 
 @contextmanager
@@ -126,13 +198,18 @@ class SentimentoHF(Model):
                  nomes_classes=None, nome_tokenizador=None,
                  kwargs_carregamento=None, kwargs_inferencia=None,
                  limpar_texto=False, nome_alvo="sentimento",
-                 variavel_alvo=None):
+                 variavel_alvo=None, manter_vivo=False):
         """
         variavel_alvo: a variável-alvo (categórica) do corpus rotulado. Se for
         dada, o modelo usa exatamente essa variável, para o Orange reconhecer
         que ambos falam do mesmo alvo (o Orange compara nome E origem). Cada
         rótulo do modelo é ligado ao valor do alvo de mesmo nome, depois de
         aplicado nomes_classes.
+
+        manter_vivo: se True, o pipeline fica carregado em memória entre uma
+        previsão e outra (mais rápido, usa mais memória); chame liberar()
+        para soltá-lo manualmente. Se False (padrão), cada previsão carrega
+        e libera o pipeline na hora.
         """
         rotulos_modelo = [str(r) for r in rotulos_modelo]
         nomes = list(nomes_classes) if nomes_classes else rotulos_modelo
@@ -157,23 +234,51 @@ class SentimentoHF(Model):
         self.kwargs_carregamento = dict(kwargs_carregamento or {})
         self.kwargs_inferencia = dict(kwargs_inferencia or {})
         self.limpar_texto = bool(limpar_texto)
+        self.manter_vivo = bool(manter_vivo)
         self.name = "HF: " + nome_modelo.split("/")[-1]
-        self._pipe = None  # carregado sob demanda; não vai para o pickle
+        self._pipe = None  # só é preenchido quando manter_vivo=True
 
     # ---- carregamento ---------------------------------------------------
+    def _carregar_pipeline(self, forcar_cpu=False):
+        from transformers import pipeline
+        kw = dict(self.kwargs_carregamento)
+        if forcar_cpu:
+            kw["device"] = "cpu"
+        if "tokenizer" not in kw:
+            kw["tokenizer"] = carregar_tokenizador(
+                self.nome_tokenizador or self.nome_modelo,
+                self.kwargs_carregamento)
+        kw.pop("use_fast", None)
+        with numeros_formato_c():
+            return pipeline("text-classification",
+                            model=self.nome_modelo, **kw)
+
+    def _carregar_pipeline_com_fallback(self):
+        try:
+            return self._carregar_pipeline()
+        except Exception as ex:
+            if not eh_erro_cuda(ex) or "device" in self.kwargs_carregamento:
+                raise
+            return self._carregar_pipeline(forcar_cpu=True)
+
     def _pipeline(self):
-        if self._pipe is None:
-            from transformers import pipeline
-            kw = dict(self.kwargs_carregamento)
-            if "tokenizer" not in kw:
-                kw["tokenizer"] = carregar_tokenizador(
-                    self.nome_tokenizador or self.nome_modelo,
-                    self.kwargs_carregamento)
-            kw.pop("use_fast", None)
-            with numeros_formato_c():
-                self._pipe = pipeline("text-classification",
-                                      model=self.nome_modelo, **kw)
-        return self._pipe
+        """Com manter_vivo=True, carrega o pipeline uma vez e o mantém em
+        cache no objeto (reutilizado entre previsões); sem isso, cria um
+        pipeline novo a cada chamada e quem chama deve soltar a referência e
+        chamar liberar_memoria() assim que terminar (ver predict_storage),
+        para o modelo não ficar alocado indefinidamente.
+        """
+        if self.manter_vivo:
+            if self._pipe is None:
+                self._pipe = self._carregar_pipeline_com_fallback()
+            return self._pipe
+        return self._carregar_pipeline_com_fallback()
+
+    def liberar(self):
+        """Libera o pipeline mantido em memória (modo manter_vivo), se houver."""
+        if self._pipe is not None:
+            self._pipe = None
+            liberar_memoria()
 
     # ---- dados ----------------------------------------------------------
     def get_backmappers(self, data):
@@ -213,7 +318,21 @@ class SentimentoHF(Model):
         kw = dict(INFERENCIA_PADRAO)
         kw.update(self.kwargs_inferencia)
         kw["top_k"] = None  # sempre todas as classes, para obter probabilidades
-        saidas = self._pipeline()(textos, **kw)
+        pipe = self._pipeline()
+        kw.setdefault("max_length",
+                      comprimento_maximo_seguro(pipe.tokenizer, pipe.model.config))
+        try:
+            saidas = pipe(textos, **kw)
+        except Exception:
+            if self.manter_vivo:
+                # Não reaproveita um pipeline que pode ter deixado a GPU
+                # num estado inválido; a próxima chamada carrega de novo.
+                self._pipe = None
+            raise
+        finally:
+            if not self.manter_vivo:
+                del pipe
+                liberar_memoria()
 
         indice = {r.lower(): j for j, r in enumerate(self.rotulos_modelo)}
         n_classes = len(self.domain.class_var.values)
@@ -234,7 +353,7 @@ class SentimentoHF(Model):
     # ---- pickle ---------------------------------------------------------
     def __getstate__(self):
         estado = self.__dict__.copy()
-        estado["_pipe"] = None
+        estado["_pipe"] = None  # nunca serializa o pipeline carregado
         return estado
 
     def __setstate__(self, estado):
@@ -244,6 +363,7 @@ class SentimentoHF(Model):
         estado.setdefault("kwargs_carregamento", {})
         estado.setdefault("kwargs_inferencia", {})
         estado.setdefault("limpar_texto", False)
+        estado.setdefault("manter_vivo", False)
         estado.setdefault("_indices_alvo",
                           list(range(len(estado["rotulos_modelo"]))))
         estado["_pipe"] = None

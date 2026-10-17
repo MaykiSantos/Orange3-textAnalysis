@@ -6,7 +6,9 @@ from Orange.widgets.settings import Setting
 from Orange.widgets.utils.concurrent import ConcurrentWidgetMixin, TaskState
 from Orange.widgets.widget import OWWidget, Output, Msg
 
-from text_analysis.modelo import carregar_tokenizador, numeros_formato_c, ErroTokenizador
+from text_analysis.modelo import (
+    carregar_tokenizador, eh_erro_cuda, liberar_memoria, mensagem_erro,
+    numeros_formato_c, ErroTokenizador)
 from text_analysis.topicos import TopicosZeroShot, INFERENCIA_PADRAO
 
 TEXTO_TESTE = "Este é um texto de teste para validar a inferência do modelo."
@@ -69,9 +71,17 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, topicos,
             kw["tokenizer"] = tokenizador
         kw.pop("use_fast", None)
         with numeros_formato_c():
-            pipe = pipeline("zero-shot-classification", model=nome, **kw)
+            try:
+                pipe = pipeline("zero-shot-classification", model=nome, **kw)
+            except Exception as ex:
+                if not eh_erro_cuda(ex) or "device" in kw_carga:
+                    raise
+                # Um erro de CUDA pode deixar a GPU num estado inválido;
+                # tenta recuperar carregando direto na CPU.
+                kw["device"] = "cpu"
+                pipe = pipeline("zero-shot-classification", model=nome, **kw)
     except Exception as ex:
-        raise ErroCarregamentoPesos(str(ex)) from ex
+        raise ErroCarregamentoPesos(mensagem_erro(ex)) from ex
     state.set_progress_value(75)
 
     state.set_status("Fazendo uma inferência de teste...")
@@ -80,10 +90,14 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, topicos,
         kw_teste.update(kw_inf)
         pipe(TEXTO_TESTE, candidate_labels=topicos, **kw_teste)
     except Exception as ex:
-        raise ErroInferenciaTeste(str(ex)) from ex
+        raise ErroInferenciaTeste(mensagem_erro(ex)) from ex
+    finally:
+        # O pipeline só serve para validar o carregamento/a inferência aqui;
+        # não é guardado para reuso, para não manter o modelo (de centenas
+        # de MB a alguns GB) alocado em memória sem necessidade.
+        del pipe
+        liberar_memoria()
     state.set_progress_value(100)
-
-    return pipe
 
 
 class OWTopicos(OWWidget, ConcurrentWidgetMixin):
@@ -108,6 +122,7 @@ class OWTopicos(OWWidget, ConcurrentWidgetMixin):
     coluna_texto = Setting("text")
     json_carregamento = Setting("")
     json_inferencia = Setting("")
+    manter_vivo = Setting(False)
 
     class Outputs:
         model = Output("Model", Model)
@@ -192,18 +207,46 @@ class OWTopicos(OWWidget, ConcurrentWidgetMixin):
                      label="Coluna de texto do corpus:",
                      callback=self._marcar_pendente)
 
+        box = gui.widgetBox(self.controlArea, "Memória")
+        gui.checkBox(box, self, "manter_vivo",
+                     "Manter o modelo carregado em memória enquanto este "
+                     "widget existir",
+                     callback=self._mudou_manter_vivo)
+        lbl = gui.widgetLabel(
+            box, "Desligado (padrão): cada previsão carrega o modelo e o "
+                "libera da memória em seguida — usa menos memória, porém é "
+                "mais lento a cada uso. Ligado: o modelo fica carregado até "
+                "este widget ser removido ou a opção ser desligada — mais "
+                "rápido, mas usa mais memória.")
+        lbl.setWordWrap(True)
+
         self.lbl_status = gui.widgetLabel(self.controlArea,
                                           "(clique em Aplicar)")
         self.lbl_status.setWordWrap(True)
 
         self.botao = gui.button(self.controlArea, self, "Aplicar",
                                 callback=self.commit)
+        self._modelo_atual = None
         self._atualizar_estado_modelo()
         self._marcar_pendente()
 
     def onDeleteWidget(self):
         self.shutdown()
+        self._liberar_modelo_atual()
         super().onDeleteWidget()
+
+    def _liberar_modelo_atual(self):
+        if self._modelo_atual is not None:
+            self._modelo_atual.liberar()
+            self._modelo_atual = None
+
+    def _mudou_manter_vivo(self):
+        # Aplica a troca também ao modelo já enviado (se houver), sem
+        # precisar clicar em Aplicar de novo.
+        if self._modelo_atual is not None:
+            self._modelo_atual.manter_vivo = self.manter_vivo
+            if not self.manter_vivo:
+                self._modelo_atual.liberar()
 
     def _atualizar_estado_modelo(self):
         predefinido = self.modo_modelo == PREDEFINIDO
@@ -284,8 +327,8 @@ class OWTopicos(OWWidget, ConcurrentWidgetMixin):
         chave = (nome, nome_tokenizador, tuple(topicos),
                  json.dumps(kw_carga, sort_keys=True),
                  json.dumps(kw_inf, sort_keys=True))
-        if chave == self._chave_cache and self._cache_resultado is not None:
-            self._finalizar(self._cache_resultado)
+        if chave == self._chave_cache and self._cache_resultado:
+            self._finalizar()
             return
 
         self.lbl_status.setText("Carregando o modelo...")
@@ -293,10 +336,10 @@ class OWTopicos(OWWidget, ConcurrentWidgetMixin):
         self.botao.setEnabled(False)
         self.start(_tarefa, nome, nome_tokenizador, kw_carga, kw_inf, topicos)
 
-    def on_done(self, pipe):
+    def on_done(self, _resultado):
         self.botao.setEnabled(True)
-        self._cache_resultado = pipe
-        self._finalizar(pipe)
+        self._cache_resultado = True  # só marca que esta configuração já foi validada
+        self._finalizar()
 
     def on_exception(self, ex):
         self.botao.setEnabled(True)
@@ -312,15 +355,17 @@ class OWTopicos(OWWidget, ConcurrentWidgetMixin):
     def on_partial_result(self, _):
         pass
 
-    def _finalizar(self, pipe):
+    def _finalizar(self):
         ctx = self._contexto
+        self._liberar_modelo_atual()  # solta o modelo anterior antes de trocar
         modelo = TopicosZeroShot(
             ctx["nome"], ctx["topicos"], coluna_texto=ctx["coluna"],
             nome_tokenizador=ctx["nome_tokenizador"],
             kwargs_carregamento=ctx["kw_carga"],
             kwargs_inferencia=ctx["kw_inf"],
-            nome_alvo=self.nome_alvo.strip() or "topico")
-        modelo._pipe = pipe  # já carregado e testado; evita baixar de novo
+            nome_alvo=self.nome_alvo.strip() or "topico",
+            manter_vivo=self.manter_vivo)
+        self._modelo_atual = modelo
         self.lbl_status.setText(
             f"Pronto: {len(ctx['topicos'])} tópicos — "
             + ", ".join(ctx["topicos"]))

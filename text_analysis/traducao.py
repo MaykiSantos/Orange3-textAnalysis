@@ -6,7 +6,7 @@ transformers 5.x não tem mais os pipelines "translation" e
 """
 import re
 
-from text_analysis.modelo import numeros_formato_c
+from text_analysis.modelo import liberar_memoria, mensagem_erro, numeros_formato_c
 
 MODELOS = [
     {"id": "unicamp-dl/translation-pt-en-t5", "tipo": "t5",
@@ -52,7 +52,6 @@ IDIOMAS_M2M100 = {
 
 RE_FRASES = re.compile(r"(?<=[.!?…])\s+")
 MAX_CARACTERES = 400   # tamanho dos trechos enviados ao modelo
-_CACHE = {}            # modelos já carregados nesta sessão do Orange
 
 
 class Cancelado(Exception):
@@ -60,23 +59,27 @@ class Cancelado(Exception):
 
 
 def carregar(id_modelo):
-    """Carrega (uma vez por sessão) tokenizador e modelo; usa GPU se houver."""
-    if id_modelo not in _CACHE:
-        import torch
-        from transformers import AutoModelForSeq2SeqLM
-        from text_analysis.modelo import carregar_tokenizador
-        tok = carregar_tokenizador(id_modelo)
-        with numeros_formato_c():
-            mod = AutoModelForSeq2SeqLM.from_pretrained(id_modelo)
-        dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
-        try:
-            mod.to(dispositivo)
-        except Exception:
-            dispositivo = "cpu"
-            mod.to(dispositivo)
-        mod.eval()
-        _CACHE[id_modelo] = (tok, mod, dispositivo)
-    return _CACHE[id_modelo]
+    """Carrega tokenizador e modelo; usa GPU se houver.
+
+    Carrega um modelo novo a cada chamada (não fica em cache entre uma
+    tradução e outra): quem chama deve soltar a referência e chamar
+    liberar_memoria() assim que terminar de usá-lo (ver traduzir()), para o
+    modelo (de centenas de MB a alguns GB) não ficar alocado indefinidamente.
+    """
+    import torch
+    from transformers import AutoModelForSeq2SeqLM
+    from text_analysis.modelo import carregar_tokenizador
+    tok = carregar_tokenizador(id_modelo)
+    with numeros_formato_c():
+        mod = AutoModelForSeq2SeqLM.from_pretrained(id_modelo)
+    dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        mod.to(dispositivo)
+    except Exception:
+        dispositivo = "cpu"
+        mod.to(dispositivo)
+    mod.eval()
+    return tok, mod, dispositivo
 
 
 def dividir(texto, max_caracteres=MAX_CARACTERES):
@@ -115,45 +118,55 @@ def _id_idioma(tok, codigo):
 
 
 def traduzir(textos, cfg, origem="pt", destino="en", tamanho_lote=8,
-             num_beams=1, max_tokens=256, progresso=None, cancelado=None):
+             num_beams=1, max_tokens=256, progresso=None, cancelado=None,
+             modelo_carregado=None, liberar_depois=True):
     """Traduz uma lista de textos. Retorna a lista traduzida, na mesma ordem.
 
     `cfg` é um dos dicionários de MODELOS (ou um equivalente para um modelo
     avançado/personalizado): precisa de "id" e "tipo" ("t5" ou "m2m100"); se
     "t5", também de "prefixo".
+
+    `modelo_carregado`: se informado (tupla de carregar()), reusa em vez de
+    carregar de novo. `liberar_depois`: se True (padrão), libera o modelo da
+    memória ao final; use False no modo "manter vivo" (quem chamou cuida de
+    liberar mais tarde).
     """
     import torch
-    tok, mod, dispositivo = carregar(cfg["id"])
+    tok, mod, dispositivo = modelo_carregado or carregar(cfg["id"])
+    try:
+        # Divide em trechos e traduz cada trecho distinto uma vez só
+        trechos_por_texto = [dividir(t) for t in textos]
+        unicos = list(dict.fromkeys(p for ps in trechos_por_texto for p in ps))
+        # Ordenar por tamanho deixa os lotes mais uniformes (mais rápido)
+        unicos.sort(key=len)
 
-    # Divide em trechos e traduz cada trecho distinto uma vez só
-    trechos_por_texto = [dividir(t) for t in textos]
-    unicos = list(dict.fromkeys(p for ps in trechos_por_texto for p in ps))
-    # Ordenar por tamanho deixa os lotes mais uniformes (mais rápido)
-    unicos.sort(key=len)
+        gerar = {"num_beams": int(num_beams), "max_new_tokens": int(max_tokens)}
+        if cfg["tipo"] == "m2m100":
+            tok.src_lang = origem
+            gerar["forced_bos_token_id"] = _id_idioma(tok, destino)
+            prefixo = ""
+        else:
+            prefixo = cfg["prefixo"]
 
-    gerar = {"num_beams": int(num_beams), "max_new_tokens": int(max_tokens)}
-    if cfg["tipo"] == "m2m100":
-        tok.src_lang = origem
-        gerar["forced_bos_token_id"] = _id_idioma(tok, destino)
-        prefixo = ""
-    else:
-        prefixo = cfg["prefixo"]
+        traducao = {}
+        n = len(unicos)
+        for ini in range(0, n, tamanho_lote):
+            if cancelado is not None and cancelado():
+                raise Cancelado()
+            lote = unicos[ini:ini + tamanho_lote]
+            entrada = tok([prefixo + p for p in lote], return_tensors="pt",
+                          padding=True, truncation=True, max_length=512)
+            entrada = entrada.to(dispositivo)
+            with torch.no_grad():
+                ids = mod.generate(**entrada, **gerar)
+            for original, traduzido in zip(
+                    lote, tok.batch_decode(ids, skip_special_tokens=True)):
+                traducao[original] = traduzido.strip()
+            if progresso is not None:
+                progresso(100 * min(ini + tamanho_lote, n) / max(n, 1))
 
-    traducao = {}
-    n = len(unicos)
-    for ini in range(0, n, tamanho_lote):
-        if cancelado is not None and cancelado():
-            raise Cancelado()
-        lote = unicos[ini:ini + tamanho_lote]
-        entrada = tok([prefixo + p for p in lote], return_tensors="pt",
-                      padding=True, truncation=True, max_length=512)
-        entrada = entrada.to(dispositivo)
-        with torch.no_grad():
-            ids = mod.generate(**entrada, **gerar)
-        for original, traduzido in zip(
-                lote, tok.batch_decode(ids, skip_special_tokens=True)):
-            traducao[original] = traduzido.strip()
-        if progresso is not None:
-            progresso(100 * min(ini + tamanho_lote, n) / max(n, 1))
-
-    return [" ".join(traducao[p] for p in ps) for ps in trechos_por_texto]
+        return [" ".join(traducao[p] for p in ps) for ps in trechos_por_texto]
+    finally:
+        if liberar_depois:
+            del tok, mod
+            liberar_memoria()

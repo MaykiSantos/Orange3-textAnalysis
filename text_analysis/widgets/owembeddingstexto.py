@@ -41,14 +41,20 @@ MODELOS_PREDEFINIDOS = [
 
 
 def tarefa(textos, nome_modelo, kw_carga, kw_inf, tamanho_lote,
-          comprimento_maximo, normalizar, state: TaskState):
+          comprimento_maximo, normalizar, modelo_vivo, manter_vivo,
+          state: TaskState):
     state.set_status("Baixando/carregando o modelo...")
     def progresso(p):
         state.set_status("Gerando embeddings...")
         state.set_progress_value(p)
-    return E.gerar_embeddings(textos, nome_modelo, kw_carga, kw_inf,
-                              tamanho_lote, comprimento_maximo, normalizar,
-                              progresso, state.is_interruption_requested)
+    modelo_carregado = modelo_vivo or E.carregar(nome_modelo, kw_carga)
+    embeddings = E.gerar_embeddings(textos, nome_modelo, kw_carga, kw_inf,
+                                    tamanho_lote, comprimento_maximo,
+                                    normalizar, progresso,
+                                    state.is_interruption_requested,
+                                    modelo_carregado=modelo_carregado,
+                                    liberar_depois=not manter_vivo)
+    return embeddings, (modelo_carregado if manter_vivo else None)
 
 
 class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
@@ -75,6 +81,7 @@ class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
     comprimento_maximo = Setting(0)
     normalizar = Setting(True)
     auto_gerar = Setting(False)
+    manter_vivo = Setting(False)
 
     class Inputs:
         data = Input("Data", Table)
@@ -100,6 +107,9 @@ class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
         self._chave_cache = None
         self._embeddings = None
         self._chave_em_curso = None
+        self._chave_modelo_em_curso = None
+        self._modelo_vivo = None
+        self._modelo_vivo_chave = None
 
         box = gui.widgetBox(self.controlArea, "Coluna de texto")
         self.modelo_colunas = DomainModel(order=DomainModel.METAS,
@@ -146,6 +156,19 @@ class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
         gui.spin(box, self, "tamanho_lote", 1, 128,
                  label="Textos por lote (maior = mais rápido, mais memória):")
 
+        box = gui.widgetBox(self.controlArea, "Memória")
+        gui.checkBox(box, self, "manter_vivo",
+                     "Manter o modelo carregado em memória enquanto este "
+                     "widget existir",
+                     callback=self._mudou_manter_vivo)
+        lbl = gui.widgetLabel(
+            box, "Desligado (padrão): cada geração carrega o modelo e o "
+                "libera da memória em seguida — usa menos memória, porém é "
+                "mais lento a cada uso. Ligado: o modelo fica carregado até "
+                "este widget ser removido ou a opção ser desligada — mais "
+                "rápido, mas usa mais memória.")
+        lbl.setWordWrap(True)
+
         gui.checkBox(self.buttonsArea, self, "auto_gerar",
                      "Gerar automaticamente", callback=self._mudou_config)
         self.botao = gui.button(self.buttonsArea, self, "Gerar",
@@ -158,7 +181,18 @@ class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
 
     def onDeleteWidget(self):
         self.shutdown()
+        self._liberar_modelo_vivo()
         super().onDeleteWidget()
+
+    def _liberar_modelo_vivo(self):
+        if self._modelo_vivo is not None:
+            self._modelo_vivo = None
+            self._modelo_vivo_chave = None
+            E.liberar_memoria()
+
+    def _mudou_manter_vivo(self):
+        if not self.manter_vivo:
+            self._liberar_modelo_vivo()
 
     @Inputs.data
     def set_data(self, data):
@@ -264,26 +298,42 @@ class OWEmbeddingsTexto(OWWidget, ConcurrentWidgetMixin):
         if chave == self._chave_cache and self._embeddings is not None:
             self._enviar(self._embeddings)
             return
+
+        chave_modelo = (nome, json.dumps(kw_carga, sort_keys=True))
+        if self._modelo_vivo is not None and self._modelo_vivo_chave != chave_modelo:
+            self._liberar_modelo_vivo()  # modelo mudou; solta o antigo antes
+        modelo_para_reusar = (self._modelo_vivo if self.manter_vivo
+                              and self._modelo_vivo_chave == chave_modelo
+                              else None)
+
         self._chave_em_curso = chave
+        self._chave_modelo_em_curso = chave_modelo
         self.lbl_resumo.setText(
             f"Gerando embeddings de {len(self.data)} documentos...")
         self.botao.setEnabled(False)
         self.start(tarefa, self._textos(), nome, kw_carga, kw_inf,
                    self.tamanho_lote, self.comprimento_maximo or None,
-                   self.normalizar)
+                   self.normalizar, modelo_para_reusar, self.manter_vivo)
 
-    def on_done(self, embeddings):
+    def on_done(self, resultado):
+        embeddings, modelo_vivo = resultado
         self.botao.setEnabled(True)
         self._chave_cache = self._chave_em_curso
         self._embeddings = embeddings
+        if self.manter_vivo:
+            self._modelo_vivo = modelo_vivo
+            self._modelo_vivo_chave = self._chave_modelo_em_curso
         self._enviar(embeddings)
 
     def on_exception(self, ex):
         self.botao.setEnabled(True)
         if isinstance(ex, E.Cancelado):
             return
+        # Não reaproveita um modelo que pode ter deixado a GPU num estado
+        # inválido; a próxima geração carrega de novo.
+        self._liberar_modelo_vivo()
         self.lbl_resumo.setText("A geração de embeddings falhou.")
-        self.Error.falha(ex)
+        self.Error.falha(E.mensagem_erro(ex))
 
     def on_partial_result(self, _):
         pass

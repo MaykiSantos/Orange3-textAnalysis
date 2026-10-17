@@ -33,13 +33,18 @@ def item_idioma(cod):
 
 
 def tarefa(textos, cfg, origem, destino, lote, beams, max_tokens,
-           state: TaskState):
+           modelo_vivo, manter_vivo, state: TaskState):
     state.set_status("Carregando o modelo...")
     def progresso(p):
         state.set_status("Traduzindo...")
         state.set_progress_value(p)
-    return T.traduzir(textos, cfg, origem, destino, lote, beams,
-                      max_tokens, progresso, state.is_interruption_requested)
+    modelo_carregado = modelo_vivo or T.carregar(cfg["id"])
+    traducoes = T.traduzir(textos, cfg, origem, destino, lote, beams,
+                           max_tokens, progresso,
+                           state.is_interruption_requested,
+                           modelo_carregado=modelo_carregado,
+                           liberar_depois=not manter_vivo)
+    return traducoes, (modelo_carregado if manter_vivo else None)
 
 
 class OWTraducao(OWWidget, ConcurrentWidgetMixin):
@@ -66,6 +71,7 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
     nome_saida = Setting("texto_traduzido")
     usar_como_texto = Setting(True)
     auto_traduzir = Setting(False)
+    manter_vivo = Setting(False)
 
     class Inputs:
         data = Input("Data", Table)
@@ -91,6 +97,8 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
         self._chave_cache = None
         self._traducoes = None
         self._chave_em_curso = None
+        self._modelo_vivo = None
+        self._modelo_vivo_id = None
 
         box = gui.widgetBox(self.controlArea, "Coluna de texto")
         self.modelo_colunas = DomainModel(order=DomainModel.METAS,
@@ -155,6 +163,19 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
                                      "Usar como texto do corpus",
                                      callback=self._mudou_saida)
         gui.appendRadioButton(rb, "Substituir o texto original")
+
+        box = gui.widgetBox(self.controlArea, "Memória")
+        gui.checkBox(box, self, "manter_vivo",
+                     "Manter o modelo carregado em memória enquanto este "
+                     "widget existir",
+                     callback=self._mudou_manter_vivo)
+        lbl = gui.widgetLabel(
+            box, "Desligado (padrão): cada tradução carrega o modelo e o "
+                "libera da memória em seguida — usa menos memória, porém é "
+                "mais lento a cada uso. Ligado: o modelo fica carregado até "
+                "este widget ser removido ou a opção ser desligada — mais "
+                "rápido, mas usa mais memória.")
+        lbl.setWordWrap(True)
 
         gui.checkBox(self.buttonsArea, self, "auto_traduzir",
                      "Traduzir automaticamente",
@@ -281,29 +302,55 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
         if chave == self._chave_cache and self._traducoes is not None:
             self._enviar(self._traducoes)
             return
+
+        id_modelo = self.modelo["id"]
+        if self._modelo_vivo is not None and self._modelo_vivo_id != id_modelo:
+            self._liberar_modelo_vivo()  # modelo mudou; solta o antigo antes
+        modelo_para_reusar = (self._modelo_vivo if self.manter_vivo
+                              and self._modelo_vivo_id == id_modelo else None)
+
         self._chave_em_curso = chave
         self.lbl_resumo.setText(f"Traduzindo {len(self.data)} documentos...")
         self.start(tarefa, self._textos(), self.modelo,
                    origem or "pt", destino or "en", self.tamanho_lote,
-                   self.num_beams, self.max_tokens)
+                   self.num_beams, self.max_tokens,
+                   modelo_para_reusar, self.manter_vivo)
 
-    def on_done(self, traducoes):
+    def on_done(self, resultado):
+        traducoes, modelo_vivo = resultado
         self._chave_cache = self._chave_em_curso
         self._traducoes = traducoes
+        if self.manter_vivo:
+            self._modelo_vivo = modelo_vivo
+            self._modelo_vivo_id = self.modelo["id"]
         self._enviar(traducoes)
 
     def on_exception(self, ex):
         if isinstance(ex, T.Cancelado):
             return
+        # Não reaproveita um modelo que pode ter deixado a GPU num estado
+        # inválido; a próxima tradução carrega de novo.
+        self._liberar_modelo_vivo()
         self.lbl_resumo.setText("A tradução falhou.")
-        self.Error.falha(ex)
+        self.Error.falha(T.mensagem_erro(ex))
 
     def on_partial_result(self, _):
         pass
 
     def onDeleteWidget(self):
         self.shutdown()
+        self._liberar_modelo_vivo()
         super().onDeleteWidget()
+
+    def _liberar_modelo_vivo(self):
+        if self._modelo_vivo is not None:
+            self._modelo_vivo = None
+            self._modelo_vivo_id = None
+            T.liberar_memoria()
+
+    def _mudou_manter_vivo(self):
+        if not self.manter_vivo:
+            self._liberar_modelo_vivo()
 
     # ---- saída --------------------------------------------------------------
     def _enviar(self, traducoes):

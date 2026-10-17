@@ -9,8 +9,9 @@ from Orange.widgets.utils.concurrent import ConcurrentWidgetMixin, TaskState
 from Orange.widgets.widget import OWWidget, Input, Output, Msg
 
 from text_analysis.modelo import (
-    SentimentoHF, ler_config, carregar_tokenizador, numeros_formato_c,
-    INFERENCIA_PADRAO, ErroTokenizador)
+    SentimentoHF, ler_config, carregar_tokenizador, eh_erro_cuda,
+    liberar_memoria, mensagem_erro, numeros_formato_c, INFERENCIA_PADRAO,
+    ErroTokenizador)
 
 TEXTO_TESTE = "Este é um texto de teste para validar a inferência do modelo."
 
@@ -75,9 +76,17 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, state: TaskState):
             kw["tokenizer"] = tokenizador
         kw.pop("use_fast", None)
         with numeros_formato_c():
-            pipe = pipeline("text-classification", model=nome, **kw)
+            try:
+                pipe = pipeline("text-classification", model=nome, **kw)
+            except Exception as ex:
+                if not eh_erro_cuda(ex) or "device" in kw_carga:
+                    raise
+                # Um erro de CUDA pode deixar a GPU num estado inválido;
+                # tenta recuperar carregando direto na CPU.
+                kw["device"] = "cpu"
+                pipe = pipeline("text-classification", model=nome, **kw)
     except Exception as ex:
-        raise ErroCarregamentoPesos(str(ex)) from ex
+        raise ErroCarregamentoPesos(mensagem_erro(ex)) from ex
     state.set_progress_value(80)
 
     state.set_status("Fazendo uma inferência de teste...")
@@ -87,10 +96,16 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, state: TaskState):
         kw_teste["top_k"] = None
         pipe([TEXTO_TESTE], **kw_teste)
     except Exception as ex:
-        raise ErroInferenciaTeste(str(ex)) from ex
+        raise ErroInferenciaTeste(mensagem_erro(ex)) from ex
+    finally:
+        # O pipeline só serve para validar o carregamento/a inferência aqui;
+        # não é guardado para reuso, para não manter o modelo (de centenas
+        # de MB a alguns GB) alocado em memória sem necessidade.
+        del pipe
+        liberar_memoria()
     state.set_progress_value(100)
 
-    return rotulos, arquiteturas, pipe
+    return rotulos, arquiteturas
 
 
 class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
@@ -112,6 +127,7 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
     coluna_texto = Setting("text")
     json_carregamento = Setting("")
     json_inferencia = Setting("")
+    manter_vivo = Setting(False)
 
     class Inputs:
         data = Input("Data", Table)
@@ -213,14 +229,42 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
         gui.lineEdit(box, self, "coluna_texto", label="Coluna de texto do corpus:",
                      callback=self._marcar_pendente)
 
+        box = gui.widgetBox(self.controlArea, "Memória")
+        gui.checkBox(box, self, "manter_vivo",
+                     "Manter o modelo carregado em memória enquanto este "
+                     "widget existir",
+                     callback=self._mudou_manter_vivo)
+        lbl = gui.widgetLabel(
+            box, "Desligado (padrão): cada previsão carrega o modelo e o "
+                "libera da memória em seguida — usa menos memória, porém é "
+                "mais lento a cada uso. Ligado: o modelo fica carregado até "
+                "este widget ser removido ou a opção ser desligada — mais "
+                "rápido, mas usa mais memória.")
+        lbl.setWordWrap(True)
+
         self.botao = gui.button(self.controlArea, self, "Aplicar",
                                 callback=self.commit)
+        self._modelo_atual = None
         self._atualizar_estado_modelo()
         self._marcar_pendente()
 
     def onDeleteWidget(self):
         self.shutdown()
+        self._liberar_modelo_atual()
         super().onDeleteWidget()
+
+    def _liberar_modelo_atual(self):
+        if self._modelo_atual is not None:
+            self._modelo_atual.liberar()
+            self._modelo_atual = None
+
+    def _mudou_manter_vivo(self):
+        # Aplica a troca também ao modelo já enviado (se houver), sem
+        # precisar clicar em Aplicar de novo.
+        if self._modelo_atual is not None:
+            self._modelo_atual.manter_vivo = self.manter_vivo
+            if not self.manter_vivo:
+                self._modelo_atual.liberar()
 
     @Inputs.data
     def set_data(self, data):
@@ -338,7 +382,7 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
         pass
 
     def _finalizar(self, resultado):
-        rotulos, arquiteturas, pipe = resultado
+        rotulos, arquiteturas = resultado
         ctx = self._contexto
         self.lbl_rotulos.setText("Rótulos do modelo: " + ", ".join(rotulos))
 
@@ -370,14 +414,15 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
             if faltando:
                 self.Warning.classes_faltando(", ".join(faltando))
 
+        self._liberar_modelo_atual()  # solta o modelo anterior antes de trocar
         modelo = SentimentoHF(
             ctx["nome"], rotulos, coluna_texto=ctx["coluna"],
             nomes_classes=nomes or None,
             nome_tokenizador=ctx["nome_tokenizador"],
             kwargs_carregamento=ctx["kw_carga"], kwargs_inferencia=ctx["kw_inf"],
             nome_alvo=self.nome_alvo.strip() or "sentimento",
-            variavel_alvo=alvo)
-        modelo._pipe = pipe  # já carregado e testado; evita baixar de novo
+            variavel_alvo=alvo, manter_vivo=self.manter_vivo)
+        self._modelo_atual = modelo
         self.Outputs.model.send(modelo)
 
 
