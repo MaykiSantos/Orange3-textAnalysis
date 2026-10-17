@@ -69,7 +69,12 @@ def carregar(id_modelo):
         with numeros_formato_c():
             mod = AutoModelForSeq2SeqLM.from_pretrained(id_modelo)
         dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
-        mod.to(dispositivo).eval()
+        try:
+            mod.to(dispositivo)
+        except Exception:
+            dispositivo = "cpu"
+            mod.to(dispositivo)
+        mod.eval()
         _CACHE[id_modelo] = (tok, mod, dispositivo)
     return _CACHE[id_modelo]
 
