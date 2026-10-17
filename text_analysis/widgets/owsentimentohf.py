@@ -14,6 +14,32 @@ from text_analysis.modelo import (
 
 TEXTO_TESTE = "Este é um texto de teste para validar a inferência do modelo."
 
+PREDEFINIDO, AVANCADO = 0, 1
+
+MODELOS_PREDEFINIDOS = [
+    {
+        "id": "cardiffnlp/twitter-xlm-roberta-base-sentiment",
+        "rotulo": "CardiffNLP — Twitter XLM-RoBERTa (multilíngue)",
+        "descricao": "Modelo multilíngue (8 idiomas, incluindo português) "
+                     "treinado em tweets; classifica em negativo, neutro ou "
+                     "positivo.",
+    },
+    {
+        "id": "nlptown/bert-base-multilingual-uncased-sentiment",
+        "rotulo": "NLPTown — BERT multilíngue (avaliações de produtos)",
+        "descricao": "Modelo multilíngue (inglês, holandês, alemão, francês, "
+                     "italiano e espanhol) treinado em avaliações de "
+                     "produtos; classifica de 1 a 5 estrelas.",
+    },
+    {
+        "id": "pysentimiento/bertweet-pt-sentiment",
+        "rotulo": "pysentimiento — BERTweet em português",
+        "descricao": "Modelo em português treinado em tweets (biblioteca "
+                     "pysentimiento); classifica em positivo, neutro ou "
+                     "negativo.",
+    },
+]
+
 
 class ErroSemRotulos(Exception):
     pass
@@ -68,8 +94,8 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, state: TaskState):
 
 
 class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
-    name = "Modelo Hugging Face"
-    description = ("Cria um modelo de classificação de texto (ex.: sentimento) "
+    name = "Análise de Sentimento"
+    description = ("Carrega um modelo de classificação de sentimento"
                    "a partir de um modelo do Hugging Face.")
     icon = "icons/sentimento.svg"
     priority = 10
@@ -77,6 +103,8 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
     want_main_area = False
     resizing_enabled = False
 
+    modo_modelo = Setting(PREDEFINIDO)
+    modelo_idx = Setting(0)
     nome_modelo = Setting("cardiffnlp/twitter-xlm-roberta-base-sentiment")
     nome_tokenizador = Setting("")
     nomes_classes = Setting("")
@@ -122,6 +150,10 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
         top_k = Msg("O parâmetro top_k é ignorado: o add-on sempre usa todas "
                     "as classes para calcular probabilidades.")
 
+    class Information(OWWidget.Information):
+        pendente = Msg("Há alterações não aplicadas: clique em Aplicar para "
+                       "carregar/atualizar o modelo.")
+
     def __init__(self):
         OWWidget.__init__(self)
         ConcurrentWidgetMixin.__init__(self)
@@ -131,41 +163,60 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
         self._contexto = None
 
         box = gui.widgetBox(self.controlArea, "Modelo")
-        gui.lineEdit(box, self, "nome_modelo", label="Nome no Hugging Face:")
-        e = gui.lineEdit(box, self, "nome_tokenizador",
-                         label="Tokenizador (opcional; vazio = o do modelo):")
+        rb = gui.radioButtons(box, self, "modo_modelo",
+                              callback=self._atualizar_estado_modelo)
+        gui.appendRadioButton(rb, "Modelo pré-definido")
+        self.caixa_lista = gui.indentedBox(rb)
+        gui.comboBox(self.caixa_lista, self, "modelo_idx",
+                     items=[m["rotulo"] for m in MODELOS_PREDEFINIDOS],
+                     callback=self._atualizar_estado_modelo)
+        self.lbl_descricao_modelo = gui.widgetLabel(self.caixa_lista, "")
+        self.lbl_descricao_modelo.setWordWrap(True)
+
+        gui.appendRadioButton(rb, "Avançado")
+        self.caixa_avancado = gui.indentedBox(rb)
+        a = gui.lineEdit(self.caixa_avancado, self, "nome_modelo",
+                     label="Nome no Hugging Face:",
+                     callback=self._marcar_pendente)
+        a.setPlaceholderText("ex.: cardiffnlp/twitter-xlm-roberta-base-sentiment")
+        e = gui.lineEdit(self.caixa_avancado, self, "nome_tokenizador",
+                         label="Tokenizador (opcional; vazio = o do modelo):",
+                         callback=self._marcar_pendente)
         e.setPlaceholderText("ex.: FacebookAI/xlm-roberta-base")
+        e = gui.lineEdit(self.caixa_avancado, self, "json_carregamento",
+                         label="Carregamento (from_pretrained / pipeline):",
+                         callback=self._marcar_pendente)
+        e.setPlaceholderText('ex.: {"revision": "main", "device": 0}')
+        e = gui.lineEdit(self.caixa_avancado, self, "json_inferencia",
+                         label="Inferência (chamada do pipeline):",
+                         callback=self._marcar_pendente)
+        e.setPlaceholderText('ex.: {"max_length": 128, "batch_size": 8}')
 
         box = gui.widgetBox(self.controlArea, "Classes")
         self.lbl_rotulos = gui.widgetLabel(
             box, "Rótulos do modelo: (clique em Aplicar)")
         self.lbl_rotulos.setWordWrap(True)
         e = gui.lineEdit(box, self, "nomes_classes",
-                         label="Renomear classes (opcional, mesma ordem):")
+                         label="Renomear classes (opcional, mesma ordem):",
+                         callback=self._marcar_pendente)
         e.setPlaceholderText("ex.: negativo, neutro, positivo")
         self.campo_alvo = gui.lineEdit(
             box, self, "nome_alvo",
-            label="Nome da variável alvo (sem corpus conectado):")
+            label="Nome da variável alvo (sem corpus conectado):",
+            callback=self._marcar_pendente)
         self.lbl_alvo = gui.widgetLabel(
             box, "Dica: conecte o corpus rotulado à entrada deste widget para "
                  "usar o alvo dele automaticamente.")
         self.lbl_alvo.setWordWrap(True)
 
         box = gui.widgetBox(self.controlArea, "Texto")
-        gui.lineEdit(box, self, "coluna_texto", label="Coluna de texto do corpus:")
-
-        box = gui.widgetBox(self.controlArea,
-                            "Parâmetros avançados (JSON, opcional)")
-        e = gui.lineEdit(box, self, "json_carregamento",
-                         label="Carregamento (from_pretrained / pipeline):")
-        e.setPlaceholderText('ex.: {"revision": "main", "device": 0}')
-        e = gui.lineEdit(box, self, "json_inferencia",
-                         label="Inferência (chamada do pipeline):")
-        e.setPlaceholderText('ex.: {"max_length": 128, "batch_size": 8}')
+        gui.lineEdit(box, self, "coluna_texto", label="Coluna de texto do corpus:",
+                     callback=self._marcar_pendente)
 
         self.botao = gui.button(self.controlArea, self, "Aplicar",
                                 callback=self.commit)
-        self.commit()
+        self._atualizar_estado_modelo()
+        self._marcar_pendente()
 
     def onDeleteWidget(self):
         self.shutdown()
@@ -174,7 +225,27 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
     @Inputs.data
     def set_data(self, data):
         self.data = data
-        self.commit()
+        self._alvo_do_corpus()
+        self._marcar_pendente()
+
+    def _marcar_pendente(self):
+        self.Information.pendente()
+
+    def _atualizar_estado_modelo(self):
+        predefinido = self.modo_modelo == PREDEFINIDO
+        self.caixa_lista.setVisible(predefinido)
+        self.caixa_avancado.setVisible(not predefinido)
+        self.lbl_descricao_modelo.setText(
+            MODELOS_PREDEFINIDOS[self.modelo_idx]["descricao"])
+        if self.controlArea.layout() is not None:
+            self.controlArea.layout().activate()
+        self.adjustSize()
+        self._marcar_pendente()
+
+    def _modelo_e_tokenizador(self):
+        if self.modo_modelo == PREDEFINIDO:
+            return MODELOS_PREDEFINIDOS[self.modelo_idx]["id"], None
+        return self.nome_modelo.strip(), self.nome_tokenizador.strip() or None
 
     def _alvo_do_corpus(self):
         """Variável-alvo do corpus conectado (ou None)."""
@@ -208,24 +279,27 @@ class OWSentimentoHF(OWWidget, ConcurrentWidgetMixin):
     def commit(self):
         self.Error.clear()
         self.Warning.clear()
+        self.Information.pendente.clear()
         self.cancel()
         self.Outputs.model.send(None)
 
-        nome = self.nome_modelo.strip()
+        nome, nome_tokenizador = self._modelo_e_tokenizador()
         coluna = self.coluna_texto.strip()
         if not nome or not coluna:
             self.Error.sem_nome()
             return
 
-        kw_carga = self._ler_json(self.json_carregamento, "carregamento")
-        kw_inf = self._ler_json(self.json_inferencia, "inferência")
-        if kw_carga is None or kw_inf is None:
-            return
+        if self.modo_modelo == AVANCADO:
+            kw_carga = self._ler_json(self.json_carregamento, "carregamento")
+            kw_inf = self._ler_json(self.json_inferencia, "inferência")
+            if kw_carga is None or kw_inf is None:
+                return
+        else:
+            kw_carga, kw_inf = {}, {}
         if "top_k" in kw_inf:
             kw_inf.pop("top_k")
             self.Warning.top_k()
 
-        nome_tokenizador = self.nome_tokenizador.strip() or None
         self._contexto = dict(nome=nome, coluna=coluna, kw_carga=kw_carga,
                               kw_inf=kw_inf, nome_tokenizador=nome_tokenizador)
 
