@@ -59,10 +59,6 @@ class Cancelado(Exception):
     pass
 
 
-def modelo_por_id(id_modelo):
-    return next(m for m in MODELOS if m["id"] == id_modelo)
-
-
 def carregar(id_modelo):
     """Carrega (uma vez por sessão) tokenizador e modelo; usa GPU se houver."""
     if id_modelo not in _CACHE:
@@ -113,12 +109,16 @@ def _id_idioma(tok, codigo):
     return tok.convert_tokens_to_ids(f"__{codigo}__")
 
 
-def traduzir(textos, id_modelo, origem="pt", destino="en", tamanho_lote=8,
+def traduzir(textos, cfg, origem="pt", destino="en", tamanho_lote=8,
              num_beams=1, max_tokens=256, progresso=None, cancelado=None):
-    """Traduz uma lista de textos. Retorna a lista traduzida, na mesma ordem."""
+    """Traduz uma lista de textos. Retorna a lista traduzida, na mesma ordem.
+
+    `cfg` é um dos dicionários de MODELOS (ou um equivalente para um modelo
+    avançado/personalizado): precisa de "id" e "tipo" ("t5" ou "m2m100"); se
+    "t5", também de "prefixo".
+    """
     import torch
-    cfg = modelo_por_id(id_modelo)
-    tok, mod, dispositivo = carregar(id_modelo)
+    tok, mod, dispositivo = carregar(cfg["id"])
 
     # Divide em trechos e traduz cada trecho distinto uma vez só
     trechos_por_texto = [dividir(t) for t in textos]

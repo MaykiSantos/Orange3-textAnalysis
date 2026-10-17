@@ -16,6 +16,8 @@ from text_analysis import traducao as T
 
 N_PREVIA = 20
 NOVA_COLUNA, SUBSTITUIR = 0, 1
+PREDEFINIDO, AVANCADO = 0, 1
+TIPO_T5, TIPO_M2M100 = 0, 1
 
 # Lista do combo de idiomas: "Português (pt)", ordenada pelo nome
 ITENS_IDIOMAS = sorted(f"{nome} ({cod})"
@@ -30,13 +32,13 @@ def item_idioma(cod):
     return f"{T.IDIOMAS_M2M100[cod]} ({cod})"
 
 
-def tarefa(textos, id_modelo, origem, destino, lote, beams, max_tokens,
+def tarefa(textos, cfg, origem, destino, lote, beams, max_tokens,
            state: TaskState):
     state.set_status("Carregando o modelo...")
     def progresso(p):
         state.set_status("Traduzindo...")
         state.set_progress_value(p)
-    return T.traduzir(textos, id_modelo, origem, destino, lote, beams,
+    return T.traduzir(textos, cfg, origem, destino, lote, beams,
                       max_tokens, progresso, state.is_interruption_requested)
 
 
@@ -50,7 +52,11 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
     settingsHandler = DomainContextHandler()
     coluna = ContextSetting(None)
 
+    modo_modelo = Setting(PREDEFINIDO)
     modelo_idx = Setting(0)
+    nome_modelo_avancado = Setting("")
+    tipo_modelo_avancado = Setting(TIPO_T5)
+    prefixo_avancado = Setting("translate Portuguese to English: ")
     idioma_origem = Setting(item_idioma("pt"))
     idioma_destino = Setting(item_idioma("en"))
     num_beams = Setting(1)
@@ -71,6 +77,7 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
         sem_texto = Msg("Os dados não têm nenhuma coluna de texto.")
         falha = Msg("Falha na tradução: {}")
         mesmo_idioma = Msg("Os idiomas de origem e destino são iguais.")
+        sem_nome_modelo = Msg("Informe o nome do modelo (Hugging Face).")
 
     class Information(OWWidget.Information):
         pendente = Msg("Configurações alteradas: clique em Traduzir.")
@@ -92,9 +99,30 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
                      callback=self._mudou_traducao)
 
         box = gui.widgetBox(self.controlArea, "Modelo")
-        gui.comboBox(box, self, "modelo_idx",
+        rb_modelo = gui.radioButtons(box, self, "modo_modelo",
+                                     callback=self._mudou_modelo)
+        gui.appendRadioButton(rb_modelo, "Modelo pré-definido")
+        self.caixa_lista = gui.indentedBox(rb_modelo)
+        gui.comboBox(self.caixa_lista, self, "modelo_idx",
                      items=[m["rotulo"] for m in T.MODELOS],
                      callback=self._mudou_modelo)
+
+        gui.appendRadioButton(rb_modelo, "Avançado")
+        self.caixa_avancado = gui.indentedBox(rb_modelo)
+        gui.lineEdit(self.caixa_avancado, self, "nome_modelo_avancado",
+                     label="Nome no Hugging Face:",
+                     callback=self._mudou_modelo)
+        rb_tipo = gui.radioButtons(self.caixa_avancado, self,
+                                   "tipo_modelo_avancado",
+                                   label="Tipo de modelo:",
+                                   callback=self._mudou_modelo)
+        gui.appendRadioButton(
+            rb_tipo, "T5 / texto-para-texto (usa um prefixo de instrução)")
+        self.caixa_prefixo = gui.indentedBox(rb_tipo)
+        gui.lineEdit(self.caixa_prefixo, self, "prefixo_avancado",
+                     label="Prefixo:", callback=self._mudou_modelo)
+        gui.appendRadioButton(
+            rb_tipo, "M2M100 (usa os idiomas selecionados abaixo)")
 
         self.box_idiomas = gui.widgetBox(self.controlArea, "Idiomas")
         for attr, rotulo in (("idioma_origem", "De:"),
@@ -151,10 +179,23 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
     # ---- estado dos controles ---------------------------------------------
     @property
     def modelo(self):
-        return T.MODELOS[self.modelo_idx]
+        if self.modo_modelo == PREDEFINIDO:
+            return T.MODELOS[self.modelo_idx]
+        nome = self.nome_modelo_avancado.strip()
+        if self.tipo_modelo_avancado == TIPO_M2M100:
+            return {"id": nome, "tipo": "m2m100", "rotulo": nome}
+        return {"id": nome, "tipo": "t5", "rotulo": nome,
+               "prefixo": self.prefixo_avancado}
 
     def _atualizar_controles(self):
+        predefinido = self.modo_modelo == PREDEFINIDO
+        self.caixa_lista.setVisible(predefinido)
+        self.caixa_avancado.setVisible(not predefinido)
+        if not predefinido:
+            self.caixa_prefixo.setVisible(
+                self.tipo_modelo_avancado == TIPO_T5)
         self.box_idiomas.setVisible(self.modelo["tipo"] == "m2m100")
+        self.adjustSize()
         nova = self.modo_saida == NOVA_COLUNA
         self.campo_nome.setEnabled(nova)
         self.cb_texto.setEnabled(nova)
@@ -212,8 +253,9 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
         return None, None
 
     def _chave(self):
+        m = self.modelo
         return (id(self.data), self.coluna and self.coluna.name,
-                self.modelo["id"], self._origem_destino(),
+                m["id"], m["tipo"], m.get("prefixo"), self._origem_destino(),
                 self.num_beams, self.max_tokens)
 
     def _textos(self):
@@ -228,6 +270,9 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
         self.Information.pendente.clear()
         if self.data is None or self.coluna is None:
             return
+        if self.modo_modelo == AVANCADO and not self.modelo["id"]:
+            self.Error.sem_nome_modelo()
+            return
         origem, destino = self._origem_destino()
         if origem is not None and origem == destino:
             self.Error.mesmo_idioma()
@@ -238,7 +283,7 @@ class OWTraducao(OWWidget, ConcurrentWidgetMixin):
             return
         self._chave_em_curso = chave
         self.lbl_resumo.setText(f"Traduzindo {len(self.data)} documentos...")
-        self.start(tarefa, self._textos(), self.modelo["id"],
+        self.start(tarefa, self._textos(), self.modelo,
                    origem or "pt", destino or "en", self.tamanho_lote,
                    self.num_beams, self.max_tokens)
 
