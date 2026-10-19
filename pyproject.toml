@@ -14,13 +14,16 @@ keywords = ["orange3 add-on"]
 dependencies = [
     "transformers",
     "torch",
-    "sentence-transformers",
+    "sentence-transformers[image]",
+    "bertopic",
     "sentencepiece",
     "protobuf",
     "ftfy",
     "emoji",
+    "nltk",
     "orange3>=3.40.0",
     "pyqt5>=5.15.11",
+    "pyqtwebengine>=5.15.6",
 ]
 
 [project.entry-points."orange3.addon"]
@@ -34,3 +37,4 @@ include = ["text_analysis*"]
 
 [tool.setuptools.package-data]
 "text_analysis.widgets" = ["icons/*.svg"]
+"text_analysis" = ["stopwords/*.txt"]
