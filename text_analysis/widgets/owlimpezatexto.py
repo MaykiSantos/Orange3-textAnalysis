@@ -1,5 +1,8 @@
+import os
+
 from AnyQt.QtCore import Qt
-from AnyQt.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+from AnyQt.QtWidgets import (
+    QFileDialog, QHeaderView, QTableWidget, QTableWidgetItem)
 
 from Orange.data import Domain, StringVariable, Table
 from Orange.data.util import get_unique_names
@@ -35,6 +38,11 @@ class OWLimpezaTexto(OWWidget):
     # Conteúdo
     emojis = Setting(L.EMOJI_MANTER)
     numeros = Setting(False)
+    stopwords = Setting(False)
+    stopwords_idioma = Setting(L.IDIOMA_PT)
+    stopwords_idioma_nltk = Setting("")
+    stopwords_extras = Setting("")
+    stopwords_csv = Setting("")
     repeticoes = Setting(True)
     max_repeticoes = Setting(3)
     # Normalização
@@ -58,6 +66,7 @@ class OWLimpezaTexto(OWWidget):
 
     class Error(OWWidget.Error):
         sem_texto = Msg("Os dados não têm nenhuma coluna de texto.")
+        stopwords_falha = Msg("Não foi possível carregar as stopwords: {}")
 
     class Warning(OWWidget.Warning):
         sem_ftfy = Msg("Para corrigir a codificação, instale a biblioteca "
@@ -106,6 +115,31 @@ class OWLimpezaTexto(OWWidget):
               ["Manter", "Remover", "Converter em texto"])
         gui.checkBox(box, self, "numeros", "Remover números", callback=mudou)
         linha = gui.hBox(box)
+        gui.checkBox(linha, self, "stopwords",
+                     "Remover stopwords (palavras muito comuns):",
+                     callback=mudou)
+        gui.comboBox(linha, self, "stopwords_idioma",
+                     items=["Português", "English",
+                           "Outro idioma (baixa via NLTK)"],
+                     callback=mudou)
+        e = gui.lineEdit(
+            box, self, "stopwords_idioma_nltk",
+            label="Nome do outro idioma (em inglês, só se selecionado "
+                  "acima):", callback=mudou)
+        e.setPlaceholderText("ex.: spanish, french, german")
+        e = gui.lineEdit(box, self, "stopwords_extras",
+                         label="Stopwords extras (separadas por vírgula):",
+                         callback=mudou)
+        e.setPlaceholderText("ex.: tipo, né, então")
+        linha = gui.hBox(box)
+        gui.widgetLabel(linha, "CSV com mais stopwords:")
+        self.lbl_csv_stopwords = gui.widgetLabel(linha, "(nenhum)")
+        self.lbl_csv_stopwords.setWordWrap(True)
+        gui.button(linha, self, "Selecionar...",
+                  callback=self._selecionar_csv_stopwords)
+        gui.button(linha, self, "Limpar",
+                  callback=self._limpar_csv_stopwords)
+        linha = gui.hBox(box)
         gui.checkBox(linha, self, "repeticoes",
                      "Reduzir caracteres repetidos para no máximo",
                      callback=mudou)
@@ -153,6 +187,29 @@ class OWLimpezaTexto(OWWidget):
         self.tabela.setEditTriggers(QTableWidget.NoEditTriggers)
         self.mainArea.layout().addWidget(self.tabela)
 
+        self._atualizar_lbl_csv_stopwords()
+
+    # ---- stopwords: CSV extra --------------------------------------------
+    def _atualizar_lbl_csv_stopwords(self):
+        self.lbl_csv_stopwords.setText(
+            os.path.basename(self.stopwords_csv) if self.stopwords_csv
+            else "(nenhum)")
+
+    def _selecionar_csv_stopwords(self):
+        caminho, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar CSV de stopwords", self.stopwords_csv or "",
+            "CSV (*.csv);;Todos os arquivos (*)")
+        if caminho:
+            self.stopwords_csv = caminho
+            self._atualizar_lbl_csv_stopwords()
+            self._mudou()
+
+    def _limpar_csv_stopwords(self):
+        if self.stopwords_csv:
+            self.stopwords_csv = ""
+            self._atualizar_lbl_csv_stopwords()
+            self._mudou()
+
     # ---- entrada --------------------------------------------------------
     @Inputs.data
     def set_data(self, data):
@@ -179,6 +236,22 @@ class OWLimpezaTexto(OWWidget):
         self._atualizar_previa()
         self.commit.deferred()
 
+    def _resolver_stopwords(self):
+        if not self.stopwords:
+            self.Error.stopwords_falha.clear()
+            return None
+        try:
+            palavras = L.resolver_stopwords(
+                idioma=self.stopwords_idioma,
+                idioma_nltk=self.stopwords_idioma_nltk,
+                extras=self.stopwords_extras,
+                arquivo_csv=self.stopwords_csv)
+            self.Error.stopwords_falha.clear()
+            return palavras
+        except Exception as ex:
+            self.Error.stopwords_falha(str(ex))
+            return None
+
     def _opcoes(self):
         self.Warning.sem_ftfy(shown=self.corrigir_codificacao
                               and not L.TEM_FTFY)
@@ -189,7 +262,8 @@ class OWLimpezaTexto(OWWidget):
             remover_html=self.remover_html, links=self.links,
             emails=self.emails, mencoes=self.mencoes,
             hashtags=self.hashtags, emojis=self.emojis,
-            numeros=self.numeros, repeticoes=self.repeticoes,
+            numeros=self.numeros, stopwords=self._resolver_stopwords(),
+            repeticoes=self.repeticoes,
             max_repeticoes=self.max_repeticoes, minusculas=self.minusculas,
             acentos=self.acentos, pontuacao=self.pontuacao,
             espacos=self.espacos)

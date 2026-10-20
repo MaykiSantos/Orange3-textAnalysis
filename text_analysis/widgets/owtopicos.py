@@ -101,11 +101,11 @@ def _tarefa(nome, nome_tokenizador, kw_carga, kw_inf, topicos,
 
 
 class OWTopicos(OWWidget, ConcurrentWidgetMixin):
-    name = "Extração de Tópicos"
+    name = "Zero-shot Classification"
     description = ("Classifica textos por tópicos definidos pelo usuário, "
                    "usando um modelo zero-shot multilíngue (NLI) do "
                    "Hugging Face — não precisa de dados rotulados.")
-    icon = "icons/topicos.svg"
+    icon = "icons/zeroshot.svg"
     priority = 12
     keywords = ["tópicos", "topicos", "topics", "zero-shot", "nli",
                "classificação", "multilíngue"]
