@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/images/text-analysis-logo.png" width="500" alt="Text Analysis">
+  <img src="https://github.com/MaykiSantos/Orange3-textAnalysis/blob/main/doc/images/text-analysis-logo.png?raw=true" width="500" alt="Text Analysis">
 </p>
 
 Add-on do [Orange Data Mining](https://orangedatamining.com) para limpar,
@@ -10,13 +10,13 @@ Orange.
 
 ## Widgets disponíveis
 
-![Limpeza de Texto, Tradução, Análise de Sentimento, Zero-shot Classification, Embeddings de Texto e Extração de Tópicos (BERT)](doc/images/widgets_disponiveis.png)
+![Limpeza de Texto, Tradução, Análise de Sentimento, Zero-shot Classification, Embeddings de Texto e Extração de Tópicos (BERT)](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/main/doc/images/widgets_disponiveis.png?raw=true)
 
 Cada widget tem uma documentação própria na pasta [`doc/`](doc/), com
 capturas de tela, fluxos de exemplo e (para os que usam modelos do
 Hugging Face) os critérios para configurar um modelo no modo "Avançado".
 
-### <img src="text_analysis/widgets/icons/limpeza.svg" width="24" height="24" valign="middle"> [Limpeza de Texto](doc/limpeza_texto.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/limpeza.svg" width="24" height="24" valign="middle"> [Limpeza de Texto](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/limpeza_texto.md)
 
 Limpa o texto e cria uma nova coluna com o resultado, mostrando uma prévia
 antes/depois. Opções: corrigir codificação quebrada, remover HTML, links,
@@ -28,7 +28,7 @@ curtos e duplicados. É um pré-processamento de **texto corrido** (não
 "palavra a palavra" como o Preprocess Text do Orange3-Text) — a forma
 esperada pelos demais widgets deste add-on.
 
-### <img src="text_analysis/widgets/icons/traducao.svg" width="24" height="24" valign="middle"> [Tradução](doc/traducao.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/traducao.svg" width="24" height="24" valign="middle"> [Tradução](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/traducao.md)
 
 Traduz textos com `unicamp-dl/translation-pt-en-t5` (português → inglês),
 `unicamp-dl/translation-en-pt-t5` (inglês → português) ou
@@ -37,7 +37,7 @@ destino). Pode criar uma nova coluna ou substituir o texto original. Divide
 textos longos em frases, roda em segundo plano com barra de progresso e usa
 a GPU, se houver.
 
-### <img src="text_analysis/widgets/icons/sentimento.svg" width="24" height="24" valign="middle"> [Análise de Sentimento](doc/analise_sentimento.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/sentimento.svg" width="24" height="24" valign="middle"> [Análise de Sentimento](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/analise_sentimento.md)
 
 Transforma um modelo de classificação de texto do Hugging Face (ex.:
 `cardiffnlp/twitter-xlm-roberta-base-sentiment`) em um modelo do Orange,
@@ -46,7 +46,7 @@ próprio modelo, aceita parâmetros avançados em JSON e, ao receber o corpus
 rotulado na entrada, usa a variável-alvo dele para que o *Predictions*
 calcule as métricas de avaliação.
 
-### <img src="text_analysis/widgets/icons/zeroshot.svg" width="24" height="24" valign="middle"> [Zero-shot Classification](doc/zeroshot.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/zeroshot.svg" width="24" height="24" valign="middle"> [Zero-shot Classification](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/zeroshot.md)
 
 Classifica textos por tópicos definidos pelo próprio usuário (ex.:
 `esporte, política, tecnologia, saúde`), usando um modelo zero-shot
@@ -54,13 +54,13 @@ multilíngue (NLI) do Hugging Face — não precisa de dados rotulados nem de
 um modelo já treinado para as classes desejadas. Também produz um modelo
 do Orange, usado junto com *Predictions*.
 
-### <img src="text_analysis/widgets/icons/embeddings.svg" width="24" height="24" valign="middle"> [Embeddings de Texto](doc/embeddings_texto.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/embeddings.svg" width="24" height="24" valign="middle"> [Embeddings de Texto](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/embeddings_texto.md)
 
 Gera embeddings de sentença com um modelo do Hugging Face, prontos para uso
 com o widget nativo *Distances* (ex.: para clusterização, mapas de
 similaridade, projeções como t-SNE/MDS).
 
-### <img src="text_analysis/widgets/icons/topicosbert.svg" width="24" height="24" valign="middle"> [Extração de Tópicos (BERT)](doc/extracao_topicos_bert.md)
+### <img src="https://raw.githubusercontent.com/MaykiSantos/Orange3-textAnalysis/cb6612d38868a4244e4626dc78b17072cefc119a/text_analysis/widgets/icons/topicosbert.svg" width="24" height="24" valign="middle"> [Extração de Tópicos (BERT)](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/extracao_topicos_bert.md)
 
 Descobre tópicos automaticamente a partir de embeddings de sentença do
 Hugging Face, agrupados com o BERTopic (UMAP + HDBSCAN) — não é preciso
@@ -69,7 +69,7 @@ dispersão interativo, com seleção de documentos por tópico.
 
 ## Requisitos
 
-- **Orange 3** (testado com a versão 3.40) e **Python 3.9 ou superior**
+- **Orange 3** (testado com a versão 3.40) e **Python 3.12 ou superior**
 - **Orange3-Text** (opcional, recomendado): fornece o widget Corpus e os
   demais widgets de texto
 
@@ -94,4 +94,4 @@ dispersão interativo, com seleção de documentos por tópico.
 ---
 
 Para a estrutura do código e instruções de instalação em modo
-desenvolvimento, veja [`doc/desenvolvimento.md`](doc/desenvolvimento.md).
+desenvolvimento, veja [`doc/desenvolvimento.md`](https://github.com/MaykiSantos/Orange3-textAnalysis/blob/cb6612d38868a4244e4626dc78b17072cefc119a/doc/desenvolvimento.md).
