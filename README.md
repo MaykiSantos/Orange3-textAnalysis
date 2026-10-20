@@ -60,17 +60,23 @@ python -m pip install -e .
 
 ## Widgets
 
-### Limpeza de Texto
+Cada widget tem uma documentação própria na pasta [`doc/`](doc/), com
+capturas de tela, fluxos de exemplo e (para os que usam modelos do
+Hugging Face) os critérios para configurar um modelo no modo "Avançado".
+
+### [Limpeza de Texto](doc/limpeza_texto.md)
 
 Limpa o texto e cria uma nova coluna com o resultado, mostrando uma prévia
 antes/depois. Opções: corrigir codificação quebrada, remover HTML, links,
 e-mails e menções (remover ou trocar pelos marcadores `http`, `email` e
 `@user`), hashtags, emojis (remover ou converter em texto), números,
-caracteres repetidos (`muuuuito` → `muuuito`), espaços excessivos,
-minúsculas, acentos e pontuação, além de descartar textos curtos e
-duplicados.
+stopwords, caracteres repetidos (`muuuuito` → `muuuito`), espaços
+excessivos, minúsculas, acentos e pontuação, além de descartar textos
+curtos e duplicados. É um pré-processamento de **texto corrido** (não
+"palavra a palavra" como o Preprocess Text do Orange3-Text) — a forma
+esperada pelos demais widgets deste add-on.
 
-### Tradução
+### [Tradução](doc/traducao.md)
 
 Traduz textos com `unicamp-dl/translation-pt-en-t5` (português → inglês),
 `unicamp-dl/translation-en-pt-t5` (inglês → português) ou
@@ -79,7 +85,7 @@ destino). Pode criar uma nova coluna ou substituir o texto original. Divide
 textos longos em frases, roda em segundo plano com barra de progresso e usa
 a GPU, se houver.
 
-### Modelo Hugging Face
+### [Análise de Sentimento](doc/analise_sentimento.md)
 
 Transforma um modelo de classificação de texto do Hugging Face (ex.:
 `cardiffnlp/twitter-xlm-roberta-base-sentiment`) em um modelo do Orange,
@@ -88,15 +94,37 @@ próprio modelo, aceita parâmetros avançados em JSON e, ao receber o corpus
 rotulado na entrada, usa a variável-alvo dele para que o *Predictions*
 calcule as métricas de avaliação.
 
+### [Zero-shot Classification](doc/zeroshot.md)
+
+Classifica textos por tópicos definidos pelo próprio usuário (ex.:
+`esporte, política, tecnologia, saúde`), usando um modelo zero-shot
+multilíngue (NLI) do Hugging Face — não precisa de dados rotulados nem de
+um modelo já treinado para as classes desejadas. Também produz um modelo
+do Orange, usado junto com *Predictions*.
+
+### [Embeddings de Texto](doc/embeddings_texto.md)
+
+Gera embeddings de sentença com um modelo do Hugging Face, prontos para uso
+com o widget nativo *Distances* (ex.: para clusterização, mapas de
+similaridade, projeções como t-SNE/MDS).
+
+### [Extração de Tópicos (BERT)](doc/extracao_topicos_bert.md)
+
+Descobre tópicos automaticamente a partir de embeddings de sentença do
+Hugging Face, agrupados com o BERTopic (UMAP + HDBSCAN) — não é preciso
+definir os tópicos antecipadamente. Mostra o resultado num gráfico de
+dispersão interativo, com seleção de documentos por tópico.
+
 ## Fluxo de exemplo
 
 ```
-Corpus → Limpeza de Texto ─┬─► Modelo Hugging Face ──► Predictions
-                           └─────────────────────────► Predictions
+Corpus → Limpeza de Texto ─┬─► Análise de Sentimento ──► Predictions
+                           └──────────────────────────► Predictions
 ```
 
 Para usar um modelo disponível só em inglês, inclua o widget **Tradução**
-(português → inglês) depois da Limpeza de Texto.
+(português → inglês) depois da Limpeza de Texto. Veja mais exemplos de
+fluxo na documentação de cada widget, em [`doc/`](doc/).
 
 ## Estrutura do projeto
 
@@ -104,18 +132,24 @@ Para usar um modelo disponível só em inglês, inclua o widget **Tradução**
 orange3-text-analysis/
 ├── README.md
 ├── pyproject.toml
-├── docs/
+├── doc/                    # documentação de cada widget + imagens
 ├── tests/
-└── src/
-    └── text_analises/
-        ├── modelo.py        # adaptador Hugging Face → modelo do Orange
-        ├── limpeza.py       # funções de limpeza de texto
-        ├── traducao.py      # funções de tradução
-        └── widgets/
-            ├── owsentimentohf.py
-            ├── owlimpezatexto.py
-            ├── owtraducao.py
-            └── icons/
+└── text_analysis/
+    ├── modelo.py           # adaptador Hugging Face → modelo do Orange
+    ├── limpeza.py          # funções de limpeza de texto
+    ├── traducao.py         # funções de tradução
+    ├── embeddings.py       # geração de embeddings de sentença
+    ├── topicos.py          # adaptador zero-shot (NLI) → modelo do Orange
+    ├── topicos_bertopic.py # extração de tópicos com BERTopic
+    ├── stopwords/          # listas de stopwords (português, inglês)
+    └── widgets/
+        ├── owlimpezatexto.py
+        ├── owtraducao.py
+        ├── owsentimentohf.py
+        ├── owtopicos.py          # Zero-shot Classification
+        ├── owembeddingstexto.py
+        ├── owtopicosbertopic.py  # Extração de Tópicos (BERT)
+        └── icons/
 ```
 
 ## Observações
