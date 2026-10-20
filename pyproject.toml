@@ -1,16 +1,19 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "orange3-text-analysis"
-version = "0.0.1"
+version = "0.0.3"
 description = "Add-on do Orange: limpeza, tradução e classificação de textos com modelos do Hugging Face"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Mayki dos Santos Oliveira", email = "maykioliveira97@gmail.com"},
+]
 keywords = ["orange3 add-on"]
-# Orange3 NÃO é listado de propósito: evita que o pip tente atualizar
-# o próprio Orange dentro da instalação dele.
 dependencies = [
     "transformers",
     "torch",
@@ -25,6 +28,10 @@ dependencies = [
     "pyqt5>=5.15.11",
     "pyqtwebengine>=5.15.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/MaykiSantos/Orange3-textAnalysis"
+Repository = "https://github.com/MaykiSantos/Orange3-textAnalysis"
 
 [project.entry-points."orange3.addon"]
 text_analysis = "text_analysis"
