@@ -17,6 +17,29 @@ Hugging Face, agrupados com o [BERTopic](https://maartengr.github.io/BERTopic/)
 - **Saída — Topics**: uma linha por tópico, com a quantidade de documentos e
   as palavras-chave que o descrevem.
 
+## Fluxo base
+
+![Fluxo: File → Limpeza de Texto → Extração de Tópicos (BERT), com os tópicos destacados no gráfico](images/extracao_topicos_bert_fluxo.png)
+
+```
+File → Limpeza de Texto → Extração de Tópicos (BERT)
+```
+
+- **File**: carrega os dados de entrada (ex.: uma tabela com relatos ou
+  comentários em texto).
+- **Limpeza de Texto** (opcional, mas recomendado): normaliza o texto
+  antes da extração (ver a documentação desse widget) — na captura de
+  tela, a coluna gerada por ele (`texto_limpo`) é a escolhida em "Coluna
+  de texto".
+- **Extração de Tópicos (BERT)**: gera os embeddings, agrupa os
+  documentos em tópicos e mostra o resultado no gráfico de dispersão, com
+  o contorno (envoltória convexa) de cada tópico e os pontos sem tópico
+  (ruído) espalhados em volta.
+
+Este widget pode ser usado sozinho (sem o Limpeza de Texto antes), mas um
+texto já limpo tende a gerar tópicos mais nítidos, pois reduz ruído
+irrelevante (links, menções, pontuação excessiva etc.) nos embeddings.
+
 ## Campos do widget
 
 ### Coluna de texto
